@@ -1,0 +1,1817 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>DRM Panic — decode &amp; report kernel panic QR codes</title>
+  <meta
+    name="description"
+    content="Decode the QR code shown on a Linux kernel DRM panic screen and report the issue to developers."
+  />
+  <link
+    rel="icon"
+    type="image/x-icon"
+    href="https://gh-proxy.org/https://raw.githubusercontent.com/evernightvista/panic-errors/main/favicon.ico"
+  />
+  <link rel="preconnect" href="https://cdn.jsdelivr.net" crossorigin />
+  <link
+    rel="stylesheet"
+    href="https://miaoda.feishu.cn/fonts/css2?family=Red+Hat+Display:wght@500;700;900&family=Red+Hat+Text:wght@400;500;700&display=swap"
+  />
+  <!-- MiSans (CJK) via jsDelivr: unicode-range subset per weight -->
+  <link
+    rel="stylesheet"
+    href="https://cdn.jsdelivr.net/npm/misans@5.0.0/lib/Normal/MiSans-Regular.min.css"
+  />
+  <link
+    rel="stylesheet"
+    href="https://cdn.jsdelivr.net/npm/misans@5.0.0/lib/Normal/MiSans-Medium.min.css"
+  />
+  <link
+    rel="stylesheet"
+    href="https://cdn.jsdelivr.net/npm/misans@5.0.0/lib/Normal/MiSans-Demibold.min.css"
+  />
+  <link
+    rel="stylesheet"
+    href="https://cdn.jsdelivr.net/npm/misans@5.0.0/lib/Normal/MiSans-Bold.min.css"
+  />
+  <script>
+    // Fallback mirror (unpkg) for MiSans if jsDelivr is unreachable.
+    (function () {
+      var hasMiSans = function () {
+        if (!document.fonts) return true;
+        var found = false;
+        document.fonts.forEach(function (f) {
+          if (f.family === "MiSans") found = true;
+        });
+        return found;
+      };
+      if (!hasMiSans()) {
+        var weights = ["Regular", "Medium", "Demibold", "Bold"];
+        for (var i = 0; i < weights.length; i++) {
+          var link = document.createElement("link");
+          link.rel = "stylesheet";
+          link.href =
+            "https://unpkg.com/misans@5.0.0/lib/Normal/MiSans-" +
+            weights[i] +
+            ".min.css";
+          document.head.appendChild(link);
+        }
+      }
+    })();
+  </script>
+  <script src="https://cdn.jsdelivr.net/npm/pako@2.1.0/dist/pako.min.js"></script>
+  <script>
+    // Fallback mirror (cdnjs) if jsDelivr is unreachable.
+    if (!window.pako) {
+      document.write(
+        '<script src="https://cdnjs.cloudflare.com/ajax/libs/pako/2.1.0/pako.min.js"><\/script>'
+      );
+    }
+  </script>
+  <style>
+    /* ============ Design tokens ============ */
+    :root {
+      --grad-light: radial-gradient(circle at 2.5rem 2.5rem, #51a2da 34px, #3c6eb4 100%);
+      --grad-dark: radial-gradient(circle at 2.5rem 2.5rem, #51a2da 34px, #00356b 100%);
+      --ink: #15202b;
+      --ink-soft: #46586b;
+      --accent: #0066cc;
+      --accent-strong: #00458f;
+      --link: #0066cc;
+      --line: #e3e9f1;
+      --fill: #f7f9fc;
+      --white: #ffffff;
+      --card-bg: #ffffff;
+      --card-border: rgba(255, 255, 255, 0.55);
+      --mono-ink: #33414f;
+      --icon-ink: #4a5a6b;
+      --icon-hover-bg: #eef2f7;
+      --icon-hover-ink: #1c2530;
+      --overlay: rgba(11, 24, 40, 0.48);
+      --shadow-modal: 0 26px 70px rgba(8, 20, 36, 0.4);
+      --tux-ok: #2a5c9e;
+      --tux-err: #b3402a;
+      --hint-bg: rgba(11, 24, 40, 0.05);
+      --hint-border: rgba(11, 24, 40, 0.28);
+      --hint-ink: #44566b;
+      --radius: 14px;
+      --shadow-card: 0 14px 36px rgba(9, 30, 55, 0.32);
+      --font-display: "Red Hat Display", "MiSans", "Noto Sans SC", "Noto Sans TC", "Noto Sans JP", "Noto Sans KR", "PingFang SC", "Hiragino Sans", "Microsoft YaHei", "Yu Gothic", "Malgun Gothic", "Segoe UI", system-ui, sans-serif;
+      --font-body: "Red Hat Text", "MiSans", "Noto Sans SC", "Noto Sans TC", "Noto Sans JP", "Noto Sans KR", "PingFang SC", "Hiragino Sans", "Microsoft YaHei", "Yu Gothic", "Malgun Gothic", "Segoe UI", system-ui, sans-serif;
+      --font-mono: "Cascadia Code", "JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+    }
+
+    /* Dark theme: follow system preference unless the user overrides
+       with the header toggle (which sets html[data-theme]). */
+    @media (prefers-color-scheme: dark) {
+      :root:not([data-theme="light"]) {
+        --ink: #e7eef6;
+        --ink-soft: #a9bccf;
+        --accent: #2f7fe0;
+        --accent-strong: #2569be;
+        --link: #7cbbf7;
+        --line: #23384a;
+        --fill: #0e1a24;
+        --card-bg: #12212e;
+        --card-border: rgba(255, 255, 255, 0.1);
+        --mono-ink: #c3d2e0;
+        --icon-ink: #b6c6d6;
+        --icon-hover-bg: #223547;
+        --icon-hover-ink: #eef3f8;
+        --overlay: rgba(2, 9, 16, 0.62);
+        --shadow-modal: 0 26px 70px rgba(0, 0, 0, 0.55);
+        --tux-ok: #6db1e8;
+        --tux-err: #f08a72;
+        --hint-bg: rgba(255, 255, 255, 0.07);
+        --hint-border: rgba(255, 255, 255, 0.35);
+        --hint-ink: #c8d6e4;
+      }
+    }
+
+    [data-theme="dark"] {
+      --ink: #e7eef6;
+      --ink-soft: #a9bccf;
+      --accent: #2f7fe0;
+      --accent-strong: #2569be;
+      --link: #7cbbf7;
+      --line: #23384a;
+      --fill: #0e1a24;
+      --card-bg: #12212e;
+      --card-border: rgba(255, 255, 255, 0.1);
+      --mono-ink: #c3d2e0;
+      --icon-ink: #b6c6d6;
+      --icon-hover-bg: #223547;
+      --icon-hover-ink: #eef3f8;
+      --overlay: rgba(2, 9, 16, 0.62);
+      --shadow-modal: 0 26px 70px rgba(0, 0, 0, 0.55);
+      --tux-ok: #6db1e8;
+      --tux-err: #f08a72;
+      --hint-bg: rgba(255, 255, 255, 0.07);
+      --hint-border: rgba(255, 255, 255, 0.35);
+      --hint-ink: #c8d6e4;
+    }
+
+    * {
+      box-sizing: border-box;
+    }
+
+    [hidden] {
+      display: none !important;
+    }
+
+    html,
+    body {
+      margin: 0;
+      padding: 0;
+    }
+
+    body {
+      min-height: 100dvh;
+      display: flex;
+      flex-direction: column;
+      background: var(--grad-light);
+      color: var(--ink);
+      font-family: var(--font-body);
+      -webkit-font-smoothing: antialiased;
+    }
+
+    @media (prefers-color-scheme: dark) {
+      body {
+        background: var(--grad-dark);
+      }
+    }
+
+    [data-theme="light"] body {
+      background: var(--grad-light);
+    }
+
+    [data-theme="dark"] body {
+      background: var(--grad-dark);
+    }
+
+    :focus-visible {
+      outline: 3px solid var(--link);
+      outline-offset: 2px;
+    }
+
+    /* ============ Header ============ */
+    .site-header {
+      display: flex;
+      align-items: center;
+      padding: 1.15rem 1.5rem;
+    }
+
+    .site-header :focus-visible,
+    .site-footer :focus-visible {
+      outline-color: #ffffff;
+    }
+
+    .brand {
+      display: inline-flex;
+      align-items: center;
+      gap: 0.55rem;
+      background: none;
+      border: none;
+      padding: 0.25rem 0.35rem;
+      margin: 0;
+      cursor: pointer;
+      color: #ffffff;
+      font: inherit;
+      border-radius: 8px;
+    }
+
+    .brand-logo {
+      height: 34px;
+      width: auto;
+      flex: none;
+      display: block;
+    }
+
+    .theme-toggle {
+      margin-left: auto;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      width: 40px;
+      height: 40px;
+      background: rgba(255, 255, 255, 0.16);
+      color: #ffffff;
+      border: 1px solid rgba(255, 255, 255, 0.45);
+      border-radius: 8px;
+      cursor: pointer;
+    }
+
+    .theme-toggle:hover {
+      background: rgba(255, 255, 255, 0.26);
+    }
+
+    .theme-toggle svg {
+      width: 18px;
+      height: 18px;
+    }
+
+    .theme-toggle .icon-sun {
+      display: none;
+    }
+
+    [data-theme="dark"] .theme-toggle .icon-moon {
+      display: none;
+    }
+
+    [data-theme="dark"] .theme-toggle .icon-sun {
+      display: block;
+    }
+
+    .lang-select {
+      margin-left: 0.5rem;
+      padding: 0.4rem 0.6rem;
+      background: rgba(255, 255, 255, 0.16);
+      color: #ffffff;
+      border: 1px solid rgba(255, 255, 255, 0.45);
+      border-radius: 8px;
+      font-family: var(--font-body);
+      font-size: 0.9rem;
+      cursor: pointer;
+    }
+
+    .lang-select option {
+      color: #15202b;
+    }
+
+    /* ============ Main / card ============ */
+    .site-main {
+      flex: 1;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      padding: 1.5rem 1rem 3.25rem;
+    }
+
+    .card {
+      width: 100%;
+      max-width: 620px;
+      background: var(--card-bg);
+      border: 1px solid var(--card-border);
+      border-radius: var(--radius);
+      box-shadow: var(--shadow-card);
+      padding: 3rem 3.25rem 2.6rem;
+      text-align: center;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      gap: 0.9rem;
+    }
+
+    @media (prefers-reduced-motion: no-preference) {
+      .card {
+        animation: card-in 0.4s ease both;
+      }
+
+      @keyframes card-in {
+        from {
+          opacity: 0;
+          transform: translateY(10px);
+        }
+        to {
+          opacity: 1;
+          transform: none;
+        }
+      }
+    }
+
+    .tux-img {
+      width: 128px;
+      height: 128px;
+      margin: 0 0 0.35rem;
+      object-fit: contain;
+      flex: none;
+      user-select: none;
+    }
+
+    .card h1 {
+      margin: 0;
+      font-family: var(--font-display);
+      font-weight: 700;
+      font-size: 1.65rem;
+      line-height: 1.25;
+      letter-spacing: 0.01em;
+    }
+
+    .card p {
+      margin: 0;
+      color: var(--ink-soft);
+      font-size: 0.98rem;
+      line-height: 1.6;
+      max-width: 46ch;
+    }
+
+    .card .btn-primary {
+      margin-top: 0.4rem;
+    }
+
+    /* ============ Buttons ============ */
+    .btn-primary {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      gap: 0.4rem;
+      background: var(--accent);
+      color: var(--white);
+      font-family: var(--font-body);
+      font-weight: 600;
+      font-size: 0.95rem;
+      border: none;
+      border-radius: 8px;
+      padding: 0.72rem 1.7rem;
+      cursor: pointer;
+      transition: background-color 0.15s ease;
+    }
+
+    .btn-primary:hover {
+      background: var(--accent-strong);
+    }
+
+    .btn-primary:active {
+      transform: translateY(1px);
+    }
+
+    .btn-link {
+      display: inline-flex;
+      align-items: center;
+      gap: 0.35rem;
+      background: none;
+      border: none;
+      padding: 0.35rem 0.5rem;
+      margin: 0;
+      color: var(--link);
+      font-family: var(--font-body);
+      font-weight: 600;
+      font-size: 0.95rem;
+      cursor: pointer;
+      border-radius: 6px;
+      text-decoration: none;
+    }
+
+    .btn-link:hover {
+      text-decoration: underline;
+      text-underline-offset: 3px;
+    }
+
+    .btn-link svg,
+    .inline-link svg {
+      width: 15px;
+      height: 15px;
+      flex: none;
+    }
+
+    .icon-btn {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      width: 34px;
+      height: 34px;
+      background: none;
+      border: none;
+      border-radius: 8px;
+      color: var(--icon-ink);
+      cursor: pointer;
+    }
+
+    .icon-btn:hover {
+      background: var(--icon-hover-bg);
+      color: var(--icon-hover-ink);
+    }
+
+    .icon-btn svg {
+      width: 18px;
+      height: 18px;
+    }
+
+    /* ============ Usage hint (error view) ============ */
+    .usage-hint {
+      margin-top: 1.75rem;
+      width: 100%;
+      text-align: left;
+      background: var(--hint-bg);
+      border: 1px dashed var(--hint-border);
+      border-radius: 10px;
+      padding: 0.7rem 0.9rem;
+      color: var(--hint-ink);
+      font-family: var(--font-mono);
+      font-size: 0.8rem;
+      line-height: 1.5;
+      display: flex;
+      flex-direction: column;
+      gap: 0.3rem;
+    }
+
+    .usage-hint .usage-label {
+      font-family: var(--font-body);
+      font-size: 0.75rem;
+      font-weight: 700;
+      letter-spacing: 0.09em;
+      text-transform: uppercase;
+      opacity: 0.85;
+    }
+
+    .usage-hint code {
+      word-break: break-all;
+    }
+
+    /* ============ Footer ============ */
+    .site-footer {
+      padding: 1.1rem 1.5rem 1.5rem;
+      text-align: center;
+      color: rgba(255, 255, 255, 0.85);
+      font-size: 0.82rem;
+      line-height: 1.6;
+    }
+
+    .site-footer p {
+      margin: 0;
+    }
+
+    .site-footer a {
+      color: #ffffff;
+      text-decoration: underline;
+      text-underline-offset: 2px;
+    }
+
+    /* ============ Modals ============ */
+    body.modal-open {
+      overflow: hidden;
+    }
+
+    .modal-overlay {
+      position: fixed;
+      inset: 0;
+      z-index: 50;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      padding: 1rem;
+      background: var(--overlay);
+    }
+
+    @media (prefers-reduced-motion: no-preference) {
+      .modal-overlay {
+        animation: overlay-in 0.16s ease both;
+      }
+
+      .modal {
+        animation: modal-in 0.18s ease both;
+      }
+
+      @keyframes overlay-in {
+        from {
+          opacity: 0;
+        }
+      }
+
+      @keyframes modal-in {
+        from {
+          opacity: 0;
+          transform: translateY(8px) scale(0.99);
+        }
+      }
+    }
+
+    .modal {
+      width: 100%;
+      max-width: 760px;
+      max-height: 88dvh;
+      background: var(--card-bg);
+      border-radius: 16px;
+      box-shadow: var(--shadow-modal);
+      display: flex;
+      flex-direction: column;
+      overflow: hidden;
+    }
+
+    .modal-header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 1rem;
+      padding: 1.1rem 1.5rem;
+      border-bottom: 1px solid var(--line);
+    }
+
+    .modal-header h2 {
+      margin: 0;
+      font-family: var(--font-display);
+      font-weight: 700;
+      font-size: 1.2rem;
+      letter-spacing: 0.01em;
+    }
+
+    .modal-body {
+      padding: 1.35rem 1.6rem 1.6rem;
+      overflow-y: auto;
+      color: var(--ink);
+      font-size: 0.95rem;
+      line-height: 1.6;
+    }
+
+    .modal-body h3 {
+      margin: 1.25rem 0 0.5rem;
+      font-family: var(--font-display);
+      font-weight: 700;
+      font-size: 1rem;
+    }
+
+    .modal-body p {
+      margin: 0.4rem 0;
+    }
+
+    .modal-footer {
+      display: flex;
+      justify-content: flex-end;
+      padding: 1rem 1.5rem;
+      border-top: 1px solid var(--line);
+    }
+
+    .meta-list {
+      margin: 0;
+    }
+
+    .meta-row {
+      display: grid;
+      grid-template-columns: 185px 1fr;
+      gap: 0.4rem 1rem;
+      padding: 0.5rem 0;
+      border-bottom: 1px solid var(--line);
+    }
+
+    .meta-row:first-child {
+      padding-top: 0;
+    }
+
+    .meta-row dt {
+      font-weight: 700;
+    }
+
+    .meta-row dd {
+      margin: 0;
+      font-family: var(--font-mono);
+      font-size: 0.84rem;
+      color: var(--mono-ink);
+      word-break: break-all;
+    }
+
+    .trace-textarea {
+      width: 100%;
+      min-height: 30vh;
+      box-sizing: border-box;
+      resize: vertical;
+      padding: 0.65rem 0.75rem;
+      background: var(--fill);
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      color: var(--mono-ink);
+      font-family: var(--font-mono);
+      font-size: 0.82rem;
+      line-height: 1.5;
+    }
+
+    .trace-textarea:focus {
+      outline: 3px solid var(--link);
+      outline-offset: 1px;
+    }
+
+    .steps {
+      margin: 0.5rem 0;
+      padding-left: 1.25rem;
+      display: flex;
+      flex-direction: column;
+      gap: 0.5rem;
+    }
+
+    .steps li p {
+      margin: 0.35rem 0;
+    }
+
+    .steps ul {
+      margin: 0.3rem 0;
+      padding-left: 1.1rem;
+      display: flex;
+      flex-direction: column;
+      gap: 0.25rem;
+    }
+
+    .inline-link {
+      display: inline-flex;
+      align-items: center;
+      gap: 0.3rem;
+      background: none;
+      border: none;
+      padding: 0;
+      color: var(--link);
+      font-family: var(--font-body);
+      font-weight: 600;
+      font-size: inherit;
+      cursor: pointer;
+      text-decoration: underline;
+      text-underline-offset: 2px;
+      border-radius: 4px;
+    }
+
+    .email-option {
+      margin-top: 1.25rem;
+      padding-top: 1rem;
+      border-top: 1px solid var(--line);
+      display: flex;
+      align-items: center;
+      gap: 0.4rem;
+      flex-wrap: wrap;
+    }
+
+    /* ============ Responsive ============ */
+    @media (max-width: 767px) {
+      .site-header {
+        padding: 0.9rem 1rem;
+      }
+
+      .site-main {
+        padding: 0.75rem 0.75rem 2rem;
+      }
+
+      .card {
+        padding: 2rem 1.25rem 1.9rem;
+        box-shadow: none;
+        border-radius: 12px;
+      }
+
+      .tux-img {
+        width: 92px;
+        height: 92px;
+      }
+
+      .card h1 {
+        font-size: 1.35rem;
+      }
+
+      .modal-overlay {
+        padding: 0.5rem;
+        align-items: flex-end;
+      }
+
+      .modal {
+        max-height: 92dvh;
+        border-radius: 14px;
+      }
+
+      .modal-header {
+        padding: 1rem 1.1rem;
+      }
+
+      .modal-body {
+        padding: 1.1rem 1.15rem 1.3rem;
+      }
+
+      .modal-footer {
+        padding: 0.9rem 1.1rem;
+      }
+
+      .meta-row {
+        grid-template-columns: 1fr;
+        gap: 0.15rem;
+      }
+
+      .btn-primary,
+      .btn-link {
+        min-height: 44px;
+      }
+
+      .btn-link {
+        padding: 0.6rem 0.85rem;
+      }
+
+      .icon-btn {
+        width: 40px;
+        height: 40px;
+      }
+
+      .theme-toggle {
+        width: 44px;
+        height: 44px;
+      }
+
+      .trace-textarea {
+        font-size: 16px;
+      }
+    }
+
+    @media (prefers-reduced-motion: reduce) {
+      *,
+      *::before,
+      *::after {
+        animation: none !important;
+        transition: none !important;
+      }
+    }
+  </style>
+</head>
+<body>
+  <!-- ===== Header ===== -->
+  <header class="site-header">
+    <button type="button" class="brand" id="brand-home" aria-label="DRM Panic home" data-i18n-aria="brand_home">
+      <img
+        class="brand-logo"
+        src="https://gh-proxy.org/https://raw.githubusercontent.com/evernightvista/panic-errors/main/evernight-vista-brand.png"
+        alt="Evernight Vista"
+      />
+    </button>
+    <button type="button" class="theme-toggle" id="theme-toggle" aria-label="Toggle dark mode" data-i18n-aria="theme_toggle">
+      <svg class="icon-moon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+        <path d="M12 3a6 6 0 0 0 9 9 9 9 0 1 1-9-9Z" />
+      </svg>
+      <svg class="icon-sun" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+        <circle cx="12" cy="12" r="4" /><path d="M12 2v2M12 20v2M4.93 4.93l1.41 1.41M17.66 17.66l1.41 1.41M2 12h2M20 12h2M6.34 17.66l-1.41 1.41M19.07 4.93l-1.41 1.41" />
+      </svg>
+    </button>
+    <select class="lang-select" id="lang-select" aria-label="Language" data-i18n-aria="lang_label">
+      <option value="en">English</option>
+      <option value="zh-CN">简体中文</option>
+      <option value="zh-TW">繁體中文</option>
+      <option value="ja">日本語</option>
+      <option value="de">Deutsch</option>
+      <option value="ko">한국어</option>
+      <option value="fr">Français</option>
+    </select>
+  </header>
+
+  <!-- ===== Main ===== -->
+  <main class="site-main">
+    <!-- ===== View: decoded info ===== -->
+    <section class="card" id="view-info" hidden aria-live="polite">
+      <img
+        class="tux-img"
+        src="https://gh-proxy.org/https://raw.githubusercontent.com/evernightvista/panic-errors/main/kernel-errors.svg"
+        alt=""
+        aria-hidden="true"
+      />
+      <h1 data-i18n="info_title">Your system encountered a critical issue</h1>
+      <p data-i18n="info_text1">We are sorry, it looks like your system has encountered a critical issue that prevented it from continuing normal operation.</p>
+      <p data-i18n="info_text2">Please consider reporting it to get support.</p>
+      <button type="button" class="btn-link" id="btn-details">
+        <span data-i18n="view_details">View more details</span>
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+          <path d="M15 3h6v6" /><path d="M10 14 21 3" /><path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6" />
+        </svg>
+      </button>
+      <button type="button" class="btn-primary" id="btn-report"><span data-i18n="report_issue">Report Issue</span></button>
+    </section>
+
+    <!-- ===== View: error (missing/invalid params) ===== -->
+    <section class="card card-error" id="view-error" aria-live="polite">
+      <img
+        class="tux-img"
+        src="https://gh-proxy.org/https://raw.githubusercontent.com/evernightvista/panic-errors/main/kernel-errors.svg"
+        alt=""
+        aria-hidden="true"
+      />
+      <h1 data-i18n="error_title">Did you scan a QR code?</h1>
+      <p data-i18n="error_text1">Sorry, we could not find the details of your error. Did you arrive to this page after scanning a QR code?</p>
+      <p data-i18n="error_text2">Please scan the QR code again.</p>
+      <div class="usage-hint" role="note">
+        <span class="usage-label" data-i18n="usage_label">Usage</span>
+        <code>#?a=&lt;architecture&gt;&amp;v=&lt;kernel-version&gt;&amp;z=&lt;code&gt;</code>
+      </div>
+    </section>
+  </main>
+
+  <!-- ===== Footer ===== -->
+  <footer class="site-footer">
+    <p>
+      <span data-i18n="footer_text">Decode the QR code shown on a Linux kernel DRM panic screen &middot; port of</span>
+      <a href="https://github.com/JoseExposito/drm-panic-frontend" target="_blank" rel="noopener noreferrer">drm-panic-frontend</a>
+      <span data-i18n="footer_license">(AGPL-3.0)</span>
+    </p>
+  </footer>
+
+  <!-- ===== Modal: error details ===== -->
+  <div class="modal-overlay" id="details-modal" hidden>
+    <div class="modal" role="dialog" aria-modal="true" aria-labelledby="details-title">
+      <div class="modal-header">
+        <h2 id="details-title" data-i18n="details_title">Error details</h2>
+        <button type="button" class="icon-btn" data-close="details-modal" aria-label="Close" data-i18n-aria="aria_close">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true">
+            <path d="M18 6 6 18M6 6l12 12" />
+          </svg>
+        </button>
+      </div>
+      <div class="modal-body">
+        <dl class="meta-list">
+          <div class="meta-row">
+            <dt data-i18n="kv_version">Linux kernel version</dt>
+            <dd id="detail-version"></dd>
+          </div>
+          <div class="meta-row">
+            <dt data-i18n="kv_arch">Architecture</dt>
+            <dd id="detail-arch"></dd>
+          </div>
+        </dl>
+        <h3 data-i18n="error_log">Error log</h3>
+        <textarea class="trace-textarea" id="details-trace" readonly spellcheck="false" aria-label="Error log" data-i18n-aria="aria_label_log"></textarea>
+      </div>
+      <div class="modal-footer">
+        <button type="button" class="btn-primary" data-close="details-modal"><span data-i18n="close">Close</span></button>
+      </div>
+    </div>
+  </div>
+
+  <!-- ===== Modal: report issue ===== -->
+  <div class="modal-overlay" id="report-modal" hidden>
+    <div class="modal" role="dialog" aria-modal="true" aria-labelledby="report-title">
+      <div class="modal-header">
+        <h2 id="report-title" data-i18n="report_title">Report Issue</h2>
+        <button type="button" class="icon-btn" data-close="report-modal" aria-label="Close" data-i18n-aria="aria_close">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true">
+            <path d="M18 6 6 18M6 6l12 12" />
+          </svg>
+        </button>
+      </div>
+      <div class="modal-body">
+        <h3 data-i18n="report_howto_h">How to report this issue</h3>
+        <p data-i18n="report_intro">Reporting this problem helps developers fix it for everyone. Follow these simple steps:</p>
+        <ol class="steps">
+          <li>
+            <span data-i18n="step1">Click this link to open the issue form:</span>
+            <a class="inline-link" id="report-link" href="#" target="_blank" rel="noopener noreferrer">
+              <span data-i18n="open_form">Open Issue Form</span>
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                <path d="M15 3h6v6" /><path d="M10 14 21 3" /><path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6" />
+              </svg>
+            </a>
+          </li>
+          <li data-i18n="step2">Log in to GitHub or create an account.</li>
+          <li data-i18n="step3">Fill in a short summary describing what happened (e.g., &quot;System crashed while browsing&quot;).</li>
+          <li>
+            <p data-i18n="step4_intro">In the details box, tell us:</p>
+            <ul>
+              <li data-i18n="step4_1">What you were doing when the crash happened.</li>
+              <li>
+                <span data-i18n="step4_2_prefix">Copy and paste the error trace below (</span>
+                <button type="button" class="inline-link" id="copy-trace">
+                  <span id="copy-label" data-i18n="copy_btn">Click here to copy it</span>
+                  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                    <rect x="9" y="9" width="13" height="13" rx="2" /><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" />
+                  </svg>
+                </button>
+                <span data-i18n="step4_2_suffix">).</span>
+              </li>
+              <li data-i18n="step4_3">Any other details you think might be helpful.</li>
+            </ul>
+          </li>
+          <li data-i18n="step5">Click &quot;Submit new issue&quot; to send your report.</li>
+        </ol>
+        <div class="email-option">
+          <span data-i18n="email_or">Or report this issue directly by email to the developers:</span>
+          <a class="inline-link" id="mailto-link" href="mailto:13278297951@sina.cn" rel="noopener">
+            <span>13278297951@sina.cn</span>
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+              <rect x="2" y="4" width="20" height="16" rx="2" /><path d="m22 7-10 6L2 7" />
+            </svg>
+          </a>
+          <button type="button" class="inline-link" id="copy-report-btn" aria-label="Copy full report" data-i18n-aria="copy_report">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+              <rect x="9" y="9" width="13" height="13" rx="2" /><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" />
+            </svg>
+            <span id="copy-report-label" data-i18n="copy_report">Copy full report</span>
+          </button>
+        </div>
+        <p data-i18n="report_outro">That&apos;s it! Developers will review your report and may ask follow-up questions.</p>
+        <h3 data-i18n="trace_h">Error trace:</h3>
+        <textarea class="trace-textarea" id="report-trace" readonly spellcheck="false" aria-label="Error trace to paste in the bug report" data-i18n-aria="aria_label_trace"></textarea>
+      </div>
+      <div class="modal-footer">
+        <button type="button" class="btn-primary" data-close="report-modal"><span data-i18n="close">Close</span></button>
+      </div>
+    </div>
+  </div>
+
+  <script>
+    (function () {
+      "use strict";
+
+      /* ============================================================
+       * DRM Panic frontend
+       * Faithful port of JoseExposito/drm-panic-frontend (AGPL-3.0).
+       * Decodes the QR-code payload shown on a Linux kernel DRM panic
+       * screen, passed in the URL hash as:
+       *   #?a=<architecture>&v=<kernel-version>&z=<decimal code>
+       * ============================================================ */
+
+      /* ---- Configuration --------------------------------------- */
+      // Issue tracker used to open the report form.
+      var ISSUES_URL = "https://github.com/evernightvista/evernight-vista/issues";
+
+      /* ---- i18n -------------------------------------------------- */
+      var SUPPORTED_LANGS = ["en", "zh-CN", "zh-TW", "ja", "de", "ko", "fr"];
+
+      var I18N = {
+        en: {
+          brand_home: "DRM Panic home",
+          lang_label: "Language",
+          theme_toggle: "Toggle dark mode",
+          email_or: "Or report this issue directly by email to the developers:",
+          copy_report: "Copy full report",
+          copy_done: "Copied!",
+          copy_failed: "Copy failed",
+          info_title: "Your system encountered a critical issue",
+          info_text1:
+            "We are sorry, it looks like your system has encountered a critical issue that prevented it from continuing normal operation.",
+          info_text2: "Please consider reporting it to get support.",
+          view_details: "View more details",
+          report_issue: "Report Issue",
+          error_title: "Did you scan a QR code?",
+          error_text1:
+            "Sorry, we could not find the details of your error. Did you arrive to this page after scanning a QR code?",
+          error_text2: "Please scan the QR code again.",
+          usage_label: "Usage",
+          footer_text:
+            "Decode the QR code shown on a Linux kernel DRM panic screen \u00b7 port of",
+          footer_license: "(AGPL-3.0)",
+          details_title: "Error details",
+          kv_version: "Linux kernel version",
+          kv_arch: "Architecture",
+          error_log: "Error log",
+          close: "Close",
+          report_title: "Report Issue",
+          report_howto_h: "How to report this issue",
+          report_intro:
+            "Reporting this problem helps developers fix it for everyone. Follow these simple steps:",
+          step1: "Click this link to open the issue form:",
+          open_form: "Open Issue Form",
+          step2: "Log in to GitHub or create an account.",
+          step3: "Fill in a short summary describing what happened (e.g., \"System crashed while browsing\").",
+          step4_intro: "In the details box, tell us:",
+          step4_1: "What you were doing when the crash happened.",
+          step4_2_prefix: "Copy and paste the error trace below (",
+          copy_btn: "Click here to copy it",
+          copied: "Copied!",
+          step4_2_suffix: ").",
+          step4_3: "Any other details you think might be helpful.",
+          step5: "Click \"Submit new issue\" to send your report.",
+          report_outro:
+            "That's it! Developers will review your report and may ask follow-up questions.",
+          trace_h: "Error trace:",
+          trace_version: "Linux kernel version: ",
+          trace_arch: "Architecture: ",
+          trace_distro: "Evernight Vista Version: ",
+          doc_title: "DRM Panic \u2014 decode & report kernel panic QR codes",
+          aria_label_log: "Error log",
+          aria_label_trace: "Error trace to paste in the bug report",
+          aria_close: "Close"
+        },
+        "zh-CN": {
+          brand_home: "DRM Panic 主页",
+          lang_label: "语言",
+          theme_toggle: "切换深色模式",
+          email_or: "或者，直接通过电子邮件向开发者报告此问题：",
+          copy_report: "复制完整报告",
+          copy_done: "已复制！",
+          copy_failed: "复制失败",
+          info_title: "您的系统遇到了严重问题",
+          info_text1:
+            "很抱歉，您的系统似乎遇到了一个严重问题，导致无法继续正常运行。",
+          info_text2: "请考虑提交报告以获得支持。",
+          view_details: "查看详细信息",
+          report_issue: "报告问题",
+          error_title: "您扫描了二维码吗？",
+          error_text1:
+            "抱歉，我们找不到您错误的相关信息。您是在扫描二维码后到达此页面的吗？",
+          error_text2: "请重新扫描二维码。",
+          usage_label: "用法",
+          footer_text: "解析 Linux 内核 DRM 恐慌屏幕上的二维码 \u00b7 移植自",
+          footer_license: "(AGPL-3.0)",
+          details_title: "错误详情",
+          kv_version: "Linux 内核版本",
+          kv_arch: "架构",
+          error_log: "错误日志",
+          close: "关闭",
+          report_title: "报告问题",
+          report_howto_h: "如何报告此问题",
+          report_intro: "报告此问题有助于开发者修复它，让所有用户受益。请按以下简单步骤操作：",
+          step1: "点击此链接打开问题表单：",
+          open_form: "打开问题表单",
+          step2: "登录 GitHub 或创建一个账号。",
+          step3: "填写一个简要摘要，描述发生了什么（例如：“浏览时系统崩溃”）。",
+          step4_intro: "在详情框中，请告诉我们：",
+          step4_1: "崩溃发生时您正在做什么。",
+          step4_2_prefix: "复制并粘贴下面的错误追踪（",
+          copy_btn: "点击此处复制",
+          copied: "已复制！",
+          step4_2_suffix: "）。",
+          step4_3: "您认为可能有帮助的任何其他细节。",
+          step5: "点击“提交新问题”发送您的报告。",
+          report_outro: "就这样！开发者会查看您的报告，并可能提出后续问题。",
+          trace_h: "错误追踪：",
+          trace_version: "Linux 内核版本：",
+          trace_arch: "架构：",
+          trace_distro: "Evernight Vista 版本：",
+          doc_title: "DRM Panic \u2014 解析并报告内核恐慌二维码",
+          aria_label_log: "错误日志",
+          aria_label_trace: "要粘贴到问题中的错误追踪",
+          aria_close: "关闭"
+        },
+        "zh-TW": {
+          brand_home: "DRM Panic 首頁",
+          lang_label: "語言",
+          theme_toggle: "切換深色模式",
+          email_or: "或者，直接透過電子郵件向開發人員回報此問題：",
+          copy_report: "複製完整報告",
+          copy_done: "已複製！",
+          copy_failed: "複製失敗",
+          info_title: "您的系統發生嚴重問題",
+          info_text1: "很抱歉，您的系統似乎發生嚴重問題，導致無法繼續正常運作。",
+          info_text2: "請考慮提交報告以取得支援。",
+          view_details: "檢視詳細資訊",
+          report_issue: "回報問題",
+          error_title: "您是否掃描了 QR Code？",
+          error_text1:
+            "抱歉，我們找不到您錯誤的相關資訊。您是在掃描 QR Code 後來到此頁面的嗎？",
+          error_text2: "請重新掃描 QR Code。",
+          usage_label: "使用方式",
+          footer_text: "解析 Linux 核心 DRM 恐慌畫面上的 QR Code \u00b7 移植自",
+          footer_license: "(AGPL-3.0)",
+          details_title: "錯誤詳細資料",
+          kv_version: "Linux 核心版本",
+          kv_arch: "架構",
+          error_log: "錯誤記錄",
+          close: "關閉",
+          report_title: "回報問題",
+          report_howto_h: "如何回報此問題",
+          report_intro: "回報此問題有助於開發人員修復，讓所有人受益。請依循下列簡單步驟：",
+          step1: "按一下此連結以開啟問題表單：",
+          open_form: "開啟問題表單",
+          step2: "登入 GitHub 或建立帳戶。",
+          step3: "填寫簡短摘要，說明發生的事情（例如：「瀏覽時系統當機」）。",
+          step4_intro: "在詳細資料方塊中，請告訴我們：",
+          step4_1: "當機發生時您正在做什麼。",
+          step4_2_prefix: "複製並貼上下列錯誤追蹤（",
+          copy_btn: "按一下此處複製",
+          copied: "已複製！",
+          step4_2_suffix: "）。",
+          step4_3: "您認為可能有幫助的任何其他詳細資料。",
+          step5: "按一下「提交新問題」以傳送您的報告。",
+          report_outro: "就是這樣！開發人員會檢視您的報告，並可能提出後續問題。",
+          trace_h: "錯誤追蹤：",
+          trace_version: "Linux 核心版本：",
+          trace_arch: "架構：",
+          trace_distro: "Evernight Vista 版本：",
+          doc_title: "DRM Panic \u2014 解析並回報核心恐慌 QR Code",
+          aria_label_log: "錯誤記錄",
+          aria_label_trace: "要貼到問題中的錯誤追蹤",
+          aria_close: "關閉"
+        },
+        ja: {
+          brand_home: "DRM Panic ホーム",
+          lang_label: "言語",
+          theme_toggle: "ダークモードの切り替え",
+          email_or: "または、メールで直接開発者にこの問題を報告します：",
+          copy_report: "レポート全体をコピー",
+          copy_done: "コピーしました",
+          copy_failed: "コピーに失敗しました",
+          info_title: "システムで重大な問題が発生しました",
+          info_text1:
+            "申し訳ありませんが、システムに重大な問題が発生し、正常に動作を継続できませんでした。",
+          info_text2: "サポートを受けるため、レポートの送信をご検討ください。",
+          view_details: "詳細を表示",
+          report_issue: "問題を報告",
+          error_title: "QRコードをスキャンしましたか？",
+          error_text1:
+            "申し訳ありませんが、エラーの詳細が見つかりませんでした。QRコードをスキャンしてこのページに来ましたか？",
+          error_text2: "QRコードをもう一度スキャンしてください。",
+          usage_label: "使い方",
+          footer_text:
+            "Linux カーネル DRM パニック画面の QRコードを解析 \u00b7 移植元",
+          footer_license: "(AGPL-3.0)",
+          details_title: "エラーの詳細",
+          kv_version: "Linux カーネルバージョン",
+          kv_arch: "アーキテクチャ",
+          error_log: "エラーログ",
+          close: "閉じる",
+          report_title: "問題を報告",
+          report_howto_h: "この問題の報告方法",
+          report_intro:
+            "この問題を報告すると、開発者がすべての人のために修正できます。次の簡単な手順に従ってください：",
+          step1: "このリンクをクリックして問題フォームを開きます：",
+          open_form: "問題フォームを開く",
+          step2: "GitHub にログインするか、アカウントを作成します。",
+          step3: "何が起きたかを簡潔にまとめて記入します（例：「ブラウジング中にシステムがクラッシュ」）。",
+          step4_intro: "詳細欄には次のことを記入してください：",
+          step4_1: "クラッシュ時に何をしていたか。",
+          step4_2_prefix: "以下のエラートレースをコピーして貼り付けます（",
+          copy_btn: "ここをクリックしてコピー",
+          copied: "コピーしました！",
+          step4_2_suffix: "）。",
+          step4_3: "役立つと思われるその他の詳細。",
+          step5: "「Submit new issue」をクリックしてレポートを送信します。",
+          report_outro:
+            "これで完了です！開発者がレポートを確認し、フォローアップの質問をする場合があります。",
+          trace_h: "エラートレース：",
+          trace_version: "Linux カーネルバージョン：",
+          trace_arch: "アーキテクチャ：",
+          trace_distro: "Evernight Vista バージョン：",
+          doc_title: "DRM Panic \u2014 カーネルパニック QRコードの解析と報告",
+          aria_label_log: "エラーログ",
+          aria_label_trace: "問題に貼り付けるエラートレース",
+          aria_close: "閉じる"
+        },
+        de: {
+          brand_home: "DRM Panic-Startseite",
+          lang_label: "Sprache",
+          theme_toggle: "Dunkelmodus umschalten",
+          email_or: "Oder melden Sie dieses Problem direkt per E-Mail an die Entwickler:",
+          copy_report: "Vollständigen Bericht kopieren",
+          copy_done: "Kopiert!",
+          copy_failed: "Kopieren fehlgeschlagen",
+          info_title: "Ihr System ist auf ein kritisches Problem gestoßen",
+          info_text1:
+            "Es tut uns leid, aber Ihr System hat offenbar ein kritisches Problem erlebt, das den normalen Betrieb verhindert hat.",
+          info_text2: "Bitte erwägen Sie, das Problem zu melden, um Unterstützung zu erhalten.",
+          view_details: "Weitere Details anzeigen",
+          report_issue: "Problem melden",
+          error_title: "Haben Sie einen QR-Code gescannt?",
+          error_text1:
+            "Es tut uns leid, wir konnten die Details Ihres Fehlers nicht finden. Sind Sie nach dem Scannen eines QR-Codes auf dieser Seite gelandet?",
+          error_text2: "Bitte scannen Sie den QR-Code erneut.",
+          usage_label: "Verwendung",
+          footer_text:
+            "QR-Code auf dem DRM-Panic-Bildschirm des Linux-Kernels dekodieren \u00b7 Port von",
+          footer_license: "(AGPL-3.0)",
+          details_title: "Fehlerdetails",
+          kv_version: "Linux-Kernelversion",
+          kv_arch: "Architektur",
+          error_log: "Fehlerprotokoll",
+          close: "Schließen",
+          report_title: "Problem melden",
+          report_howto_h: "So melden Sie dieses Problem",
+          report_intro:
+            "Das Melden dieses Problems hilft Entwicklern, es für alle zu beheben. Befolgen Sie diese einfachen Schritte:",
+          step1: "Klicken Sie auf diesen Link, um das Problemformular zu öffnen:",
+          open_form: "Problemformular öffnen",
+          step2: "Melden Sie sich bei GitHub an oder erstellen Sie ein Konto.",
+          step3: "Geben Sie eine kurze Zusammenfassung ein (z. B. „System abgestürzt beim Surfen“).",
+          step4_intro: "Beschreiben Sie uns im Detailfeld:",
+          step4_1: "Was Sie taten, als der Absturz passierte.",
+          step4_2_prefix:
+            "Kopieren Sie die folgende Fehlerablaufverfolgung und fügen Sie sie ein (",
+          copy_btn: "Hier klicken zum Kopieren",
+          copied: "Kopiert!",
+          step4_2_suffix: ").",
+          step4_3: "Weitere Details, die hilfreich sein könnten.",
+          step5: "Klicken Sie auf „Submit new issue“, um Ihren Bericht zu senden.",
+          report_outro:
+            "Das war's! Entwickler prüfen Ihren Bericht und stellen möglicherweise Rückfragen.",
+          trace_h: "Fehlerablaufverfolgung:",
+          trace_version: "Linux-Kernelversion: ",
+          trace_arch: "Architektur: ",
+          trace_distro: "Evernight-Vista-Version: ",
+          doc_title: "DRM Panic \u2014 Kernel-Panic-QR-Codes dekodieren und melden",
+          aria_label_log: "Fehlerprotokoll",
+          aria_label_trace: "Fehlerablaufverfolgung zum Einfügen in das Problem",
+          aria_close: "Schließen"
+        },
+        ko: {
+          brand_home: "DRM Panic 홈",
+          lang_label: "언어",
+          theme_toggle: "다크 모드 전환",
+          email_or: "또는 이메일로 개발자에게 직접 이 문제를 보고하세요:",
+          copy_report: "전체 보고서 복사",
+          copy_done: "복사됨!",
+          copy_failed: "복사 실패",
+          info_title: "시스템에 심각한 문제가 발생했습니다",
+          info_text1:
+            "죄송합니다. 시스템에 정상적인 작동을 방해하는 심각한 문제가 발생한 것 같습니다.",
+          info_text2: "지원을 받으려면 문제를 보고해 주세요.",
+          view_details: "자세한 내용 보기",
+          report_issue: "문제 보고",
+          error_title: "QR 코드를 스캔하셨나요?",
+          error_text1:
+            "죄송합니다. 오류에 대한 세부 정보를 찾을 수 없습니다. QR 코드를 스캔한 후 이 페이지에 도착하셨나요?",
+          error_text2: "QR 코드를 다시 스캔해 주세요.",
+          usage_label: "사용법",
+          footer_text:
+            "Linux 커널 DRM 패닉 화면의 QR 코드 디코딩 \u00b7 포트",
+          footer_license: "(AGPL-3.0)",
+          details_title: "오류 세부 정보",
+          kv_version: "Linux 커널 버전",
+          kv_arch: "아키텍처",
+          error_log: "오류 로그",
+          close: "닫기",
+          report_title: "문제 보고",
+          report_howto_h: "이 문제를 보고하는 방법",
+          report_intro:
+            "이 문제를 보고하면 개발자가 모든 사용자를 위해 수정할 수 있습니다. 다음 간단한 단계를 따르세요:",
+          step1: "이 링크를 클릭하여 문제 양식을 엽니다:",
+          open_form: "문제 양식 열기",
+          step2: "GitHub에 로그인하거나 계정을 만듭니다.",
+          step3: "무슨 일이 있었는지 간단한 요약을 입력합니다 (예: \"브라우징 중 시스템 충돌\").",
+          step4_intro: "세부 정보 상자에 다음을 알려주세요:",
+          step4_1: "충돌이 발생했을 때 무엇을 하고 있었는지.",
+          step4_2_prefix: "아래 오류 추적을 복사하여 붙여넣습니다 (",
+          copy_btn: "여기를 클릭하여 복사",
+          copied: "복사됨!",
+          step4_2_suffix: ").",
+          step4_3: "도움이 될 만한 다른 세부 정보.",
+          step5: "\"Submit new issue\"를 클릭하여 보고서를 보냅니다.",
+          report_outro:
+            "완료입니다! 개발자가 보고서를 검토하고 후속 질문을 할 수 있습니다.",
+          trace_h: "오류 추적:",
+          trace_version: "Linux 커널 버전: ",
+          trace_arch: "아키텍처: ",
+          trace_distro: "Evernight Vista 버전: ",
+          doc_title: "DRM Panic \u2014 커널 패닉 QR 코드 디코딩 및 보고",
+          aria_label_log: "오류 로그",
+          aria_label_trace: "문제에 붙여넣을 오류 추적",
+          aria_close: "닫기"
+        },
+        fr: {
+          brand_home: "Accueil DRM Panic",
+          lang_label: "Langue",
+          theme_toggle: "Basculer en mode sombre",
+          email_or: "Ou signalez ce problème directement par e-mail aux développeurs :",
+          copy_report: "Copier le rapport complet",
+          copy_done: "Copié !",
+          copy_failed: "Échec de la copie",
+          info_title: "Votre système a rencontré un problème critique",
+          info_text1:
+            "Nous sommes désolés, il semble que votre système ait rencontré un problème critique qui l'a empêché de continuer à fonctionner normalement.",
+          info_text2: "Veuillez envisager de le signaler pour obtenir de l'aide.",
+          view_details: "Voir plus de détails",
+          report_issue: "Signaler le problème",
+          error_title: "Avez-vous scanné un code QR ?",
+          error_text1:
+            "Désolé, nous n'avons pas trouvé les détails de votre erreur. Êtes-vous arrivé sur cette page après avoir scanné un code QR ?",
+          error_text2: "Veuillez scanner à nouveau le code QR.",
+          usage_label: "Utilisation",
+          footer_text:
+            "Décoder le code QR affiché sur l'écran de panique DRM du noyau Linux \u00b7 portage de",
+          footer_license: "(AGPL-3.0)",
+          details_title: "Détails de l'erreur",
+          kv_version: "Version du noyau Linux",
+          kv_arch: "Architecture",
+          error_log: "Journal des erreurs",
+          close: "Fermer",
+          report_title: "Signaler le problème",
+          report_howto_h: "Comment signaler ce problème",
+          report_intro:
+            "Signaler ce problème aide les développeurs à le corriger pour tout le monde. Suivez ces étapes simples :",
+          step1: "Cliquez sur ce lien pour ouvrir le formulaire de signalement :",
+          open_form: "Ouvrir le formulaire de signalement",
+          step2: "Connectez-vous à GitHub ou créez un compte.",
+          step3: "Remplissez un court résumé de ce qui s'est passé (par ex. « Le système a planté pendant la navigation »).",
+          step4_intro: "Dans la zone de détails, dites-nous :",
+          step4_1: "Ce que vous faisiez au moment du plantage.",
+          step4_2_prefix: "Copiez et collez la trace d'erreur ci-dessous (",
+          copy_btn: "Cliquez ici pour la copier",
+          copied: "Copié !",
+          step4_2_suffix: ").",
+          step4_3: "Tout autre détail susceptible d'être utile.",
+          step5: "Cliquez sur « Submit new issue » pour envoyer votre rapport.",
+          report_outro:
+            "Et voilà ! Les développeurs examineront votre rapport et pourront poser des questions complémentaires.",
+          trace_h: "Trace d'erreur :",
+          trace_version: "Version du noyau Linux : ",
+          trace_arch: "Architecture : ",
+          trace_distro: "Version d'Evernight Vista : ",
+          doc_title: "DRM Panic \u2014 décoder et signaler les codes QR de panique du noyau",
+          aria_label_log: "Journal des erreurs",
+          aria_label_trace: "Trace d'erreur à coller dans le signalement",
+          aria_close: "Fermer"
+        }
+      };
+
+      var currentLang = "en";
+      var currentDict = I18N.en;
+
+      /* ---- URL parameter parsing -------------------------------- */
+      var PARAM_ARCH = "a";
+      var PARAM_VERSION = "v";
+      var PARAM_DATA = "z";
+
+      // Prefer location.search, fall back to location.hash ("#?a=...&v=...&z=...").
+      function getUrlQuery() {
+        var query = window.location.search || window.location.hash;
+        if (!query) {
+          return null;
+        }
+        if (query.charAt(0) === "#") {
+          query = query.substring(1);
+        }
+        return query;
+      }
+
+      function validParams(params) {
+        return [PARAM_ARCH, PARAM_VERSION, PARAM_DATA].every(function (key) {
+          return params.has(key);
+        });
+      }
+
+      // 17 decimal digits encode 7 bytes (10^17 < 2^56); the trailing
+      // partial chunk encodes floor((len % 17) * 2 / 5) bytes.
+      // The byte stream is zlib-compressed data, inflated here.
+      function parseTrace(encodedData) {
+        if (!/^\d+$/.test(encodedData)) {
+          return null;
+        }
+        var mainLen = Math.floor(encodedData.length / 17) * 7;
+        var remLen = Math.floor(((encodedData.length % 17) * 2) / 5);
+        var data = new Uint8Array(mainLen + remLen);
+        var offset = 0;
+        for (var i = 0; i < encodedData.length; i += 17) {
+          var chunk = encodedData.substring(i, i + 17);
+          var numBytes = chunk.length < 17 ? remLen : 7;
+          var num = BigInt(chunk);
+          for (var j = 0; j < numBytes; j++) {
+            data[offset] = Number(num % 256n);
+            num = num / 256n;
+            offset++;
+          }
+        }
+        try {
+          var inflated = window.pako.inflate(data);
+          var out = "";
+          var step = 0x8000;
+          for (var k = 0; k < inflated.length; k += step) {
+            out += String.fromCharCode.apply(
+              null,
+              inflated.subarray(k, k + step)
+            );
+          }
+          return out;
+        } catch (err) {
+          return null;
+        }
+      }
+
+      function parseUrl() {
+        var query = getUrlQuery();
+        if (!query) {
+          return null;
+        }
+        var params = new URLSearchParams(query);
+        if (!validParams(params)) {
+          return null;
+        }
+        var architecture = params.get(PARAM_ARCH);
+        var version = params.get(PARAM_VERSION);
+        var encodedData = params.get(PARAM_DATA);
+        if (!architecture || !version || !encodedData) {
+          return null;
+        }
+        var trace = parseTrace(encodedData);
+        if (!trace) {
+          return null;
+        }
+        return { architecture: architecture, version: version, trace: trace };
+      }
+
+      // "7.2.0-61.eos45.x86_64" -> "45"; legacy "fc45" kernels are also
+      // recognized; defaults to "rawhide".
+      function getEosVersion(version) {
+        var match = version.match(/(?:eos|fc)(\d+)/);
+        if (match) {
+          return match[1];
+        }
+        return "rawhide";
+      }
+
+      function reportTitle(version) {
+        return "[Evernight Vista (" + version + ") Crash]";
+      }
+
+      /* GitHub drops or mangles prefill query parameters when the URL
+         grows too long, which would leak the trace into the title field.
+         Keep the prefilled URL within a safe length; the title parameter
+         always stays intact and very short. */
+      var GITHUB_PREFILL_LIMIT = 6800;
+      var TRUNCATE_NOTE =
+        "\n\n[Trace truncated to fit the prefill URL limit - paste the full log from the details dialog.]";
+
+      /* Percent-encode everything, including the characters
+         encodeURIComponent leaves bare (!'()*~): browsers re-encode
+         them on the URL, so the budget must match the final URL. */
+      function strictEncode(text) {
+        return encodeURIComponent(text).replace(/[!'()*~]/g, function (c) {
+          return "%" + c.charCodeAt(0).toString(16).toUpperCase();
+        });
+      }
+
+      function truncateForUrl(text, maxEncoded) {
+        var note = strictEncode(TRUNCATE_NOTE);
+        var budget = maxEncoded - note.length;
+        if (budget < 0 || strictEncode(text).length <= budget) {
+          return text;
+        }
+        var lo = 0;
+        var hi = text.length;
+        while (lo < hi) {
+          var mid = (lo + hi + 1) >> 1;
+          if (strictEncode(text.slice(0, mid)).length <= budget) {
+            lo = mid;
+          } else {
+            hi = mid - 1;
+          }
+        }
+        return text.slice(0, lo) + TRUNCATE_NOTE;
+      }
+
+      /* ---- State & DOM ------------------------------------------- */
+      var state = {
+        architecture: null,
+        version: null,
+        reportTrace: "",
+      };
+
+      var viewInfo = document.getElementById("view-info");
+      var viewError = document.getElementById("view-error");
+      var detailVersion = document.getElementById("detail-version");
+      var detailArch = document.getElementById("detail-arch");
+      var detailsTrace = document.getElementById("details-trace");
+      var reportTrace = document.getElementById("report-trace");
+      var reportLink = document.getElementById("report-link");
+      var copyReportBtn = document.getElementById("copy-report-btn");
+      var copyReportLabel = document.getElementById("copy-report-label");
+      var copyLabel = document.getElementById("copy-label");
+
+      function render() {
+        var parsed = parseUrl();
+        if (parsed) {
+          state.architecture = parsed.architecture;
+          state.version = parsed.version;
+          state.reportTrace =
+            currentDict.trace_version + parsed.version + "\n" +
+            currentDict.trace_arch + parsed.architecture + "\n" +
+            currentDict.trace_distro + getEosVersion(parsed.version) + "\n\n" +
+            parsed.trace;
+
+          detailVersion.textContent = parsed.version;
+          detailArch.textContent = parsed.architecture;
+          detailsTrace.value = parsed.trace;
+          reportTrace.value = state.reportTrace;
+          var githubBase =
+            ISSUES_URL +
+            "/new?title=" +
+            strictEncode(reportTitle(parsed.version)) +
+            "&body=";
+          reportLink.href =
+            githubBase +
+            strictEncode(
+              truncateForUrl(
+                state.reportTrace,
+                GITHUB_PREFILL_LIMIT - githubBase.length
+              )
+            );
+
+          viewInfo.hidden = false;
+          viewError.hidden = true;
+        } else {
+          viewInfo.hidden = true;
+          viewError.hidden = false;
+        }
+      }
+
+      /* ---- Modals ------------------------------------------------ */
+      var lastFocused = null;
+
+      function openModal(id) {
+        var overlay = document.getElementById(id);
+        if (!overlay || !overlay.hidden) {
+          return;
+        }
+        lastFocused = document.activeElement;
+        overlay.hidden = false;
+        document.body.classList.add("modal-open");
+        var first = overlay.querySelector(
+          "button, a[href], textarea, [tabindex]:not([tabindex='-1'])"
+        );
+        if (first) {
+          first.focus();
+        }
+      }
+
+      function closeModal(overlay) {
+        if (!overlay || overlay.hidden) {
+          return;
+        }
+        overlay.hidden = true;
+        document.body.classList.remove("modal-open");
+        if (lastFocused && lastFocused.focus) {
+          lastFocused.focus();
+        }
+      }
+
+      document.querySelectorAll(".modal-overlay").forEach(function (overlay) {
+        overlay.addEventListener("click", function (event) {
+          if (event.target === overlay) {
+            closeModal(overlay);
+          }
+        });
+      });
+
+      document.querySelectorAll("[data-close]").forEach(function (button) {
+        button.addEventListener("click", function () {
+          closeModal(document.getElementById(button.getAttribute("data-close")));
+        });
+      });
+
+      document.addEventListener("keydown", function (event) {
+        if (event.key === "Escape") {
+          var open = document.querySelector(".modal-overlay:not([hidden])");
+          if (open) {
+            closeModal(open);
+          }
+        }
+      });
+
+      document.getElementById("btn-details").addEventListener("click", function () {
+        openModal("details-modal");
+      });
+
+      document.getElementById("btn-report").addEventListener("click", function () {
+        openModal("report-modal");
+      });
+
+      /* ---- Copy trace -------------------------------------------- */
+      function copyText(text) {
+        if (navigator.clipboard && window.isSecureContext) {
+          return navigator.clipboard.writeText(text);
+        }
+        return new Promise(function (resolve, reject) {
+          var helper = document.createElement("textarea");
+          helper.value = text;
+          helper.setAttribute("readonly", "");
+          helper.style.position = "fixed";
+          helper.style.opacity = "0";
+          document.body.appendChild(helper);
+          helper.select();
+          var ok = false;
+          try {
+            ok = document.execCommand("copy");
+          } catch (err) {
+            ok = false;
+          }
+          document.body.removeChild(helper);
+          if (ok) {
+            resolve();
+          } else {
+            reject(new Error("copy failed"));
+          }
+        });
+      }
+
+      document.getElementById("copy-trace").addEventListener("click", function () {
+        copyText(state.reportTrace).then(
+          function () {
+            var original = copyLabel.textContent;
+            copyLabel.textContent = currentDict.copied;
+            setTimeout(function () {
+              copyLabel.textContent = original;
+            }, 1800);
+          },
+          function () {
+            reportTrace.focus();
+            reportTrace.select();
+          }
+        );
+      });
+
+      /* ---- Copy full report (email fallback) ---------------------- */
+      copyReportBtn.addEventListener("click", function () {
+        if (!state.version || !state.reportTrace) {
+          return;
+        }
+        copyText(reportTitle(state.version) + "\n\n" + state.reportTrace).then(
+          function () {
+            copyReportLabel.textContent = currentDict.copy_done;
+            setTimeout(function () {
+              copyReportLabel.textContent = currentDict.copy_report;
+            }, 1800);
+          },
+          function () {
+            copyReportLabel.textContent = currentDict.copy_failed;
+            setTimeout(function () {
+              copyReportLabel.textContent = currentDict.copy_report;
+            }, 1800);
+          }
+        );
+      });
+
+      /* ---- URL changes -------------------------------------------- */
+      function onUrlChange() {
+        render();
+      }
+
+      window.addEventListener("hashchange", onUrlChange);
+      window.addEventListener("popstate", onUrlChange);
+
+      var pushState = history.pushState;
+      var replaceState = history.replaceState;
+      history.pushState = function () {
+        var result = pushState.apply(this, arguments);
+        onUrlChange();
+        return result;
+      };
+      history.replaceState = function () {
+        var result = replaceState.apply(this, arguments);
+        onUrlChange();
+        return result;
+      };
+
+      /* ---- Brand "home" ------------------------------------------- */
+      document.getElementById("brand-home").addEventListener("click", function () {
+        var clean = window.location.pathname + window.location.search;
+        history.replaceState(null, "", clean);
+        render();
+      });
+
+      /* ---- Language detection & switching -------------------------- */
+      var langSelect = document.getElementById("lang-select");
+
+      function normalizeLang(tag) {
+        var t = String(tag || "").toLowerCase().replace(/_/g, "-");
+        if (!t) {
+          return null;
+        }
+        for (var i = 0; i < SUPPORTED_LANGS.length; i++) {
+          if (SUPPORTED_LANGS[i].toLowerCase() === t) {
+            return SUPPORTED_LANGS[i];
+          }
+        }
+        if (
+          t === "zh" ||
+          t.indexOf("zh-hans") === 0 ||
+          t.indexOf("zh-cn") === 0 ||
+          t.indexOf("zh-sg") === 0
+        ) {
+          return "zh-CN";
+        }
+        if (t.indexOf("zh") === 0) {
+          return "zh-TW";
+        }
+        var base = t.split("-")[0];
+        for (var j = 0; j < SUPPORTED_LANGS.length; j++) {
+          if (SUPPORTED_LANGS[j].toLowerCase() === base) {
+            return SUPPORTED_LANGS[j];
+          }
+        }
+        return null;
+      }
+
+      function detectLang() {
+        var stored = null;
+        try {
+          stored = localStorage.getItem("drm-panic-lang");
+        } catch (err) {
+          stored = null;
+        }
+        if (stored && SUPPORTED_LANGS.indexOf(stored) !== -1) {
+          return stored;
+        }
+        var candidates =
+          navigator.languages && navigator.languages.length
+            ? navigator.languages
+            : [navigator.language || "en"];
+        for (var i = 0; i < candidates.length; i++) {
+          var matched = normalizeLang(candidates[i]);
+          if (matched) {
+            return matched;
+          }
+        }
+        return "en";
+      }
+
+      function applyLanguage(lang) {
+        currentLang = SUPPORTED_LANGS.indexOf(lang) !== -1 ? lang : "en";
+        currentDict = I18N[currentLang];
+        document.documentElement.lang = currentLang;
+        document.title = currentDict.doc_title;
+        document.querySelectorAll("[data-i18n]").forEach(function (el) {
+          var key = el.getAttribute("data-i18n");
+          if (key && currentDict[key] !== undefined) {
+            el.textContent = currentDict[key];
+          }
+        });
+        document.querySelectorAll("[data-i18n-aria]").forEach(function (el) {
+          var key = el.getAttribute("data-i18n-aria");
+          if (key && currentDict[key] !== undefined) {
+            el.setAttribute("aria-label", currentDict[key]);
+          }
+        });
+        langSelect.value = currentLang;
+        render();
+      }
+
+      langSelect.addEventListener("change", function () {
+        var lang = langSelect.value;
+        try {
+          localStorage.setItem("drm-panic-lang", lang);
+        } catch (err) {
+          /* storage unavailable, keep in-session choice */
+        }
+        applyLanguage(lang);
+      });
+
+      /* ---- Theme (light / dark / system) ---------------------------- */
+      var themeToggle = document.getElementById("theme-toggle");
+      var themeMedia =
+        window.matchMedia && window.matchMedia("(prefers-color-scheme: dark)");
+      var followSystemTheme = true;
+
+      function effectiveTheme() {
+        var attr = document.documentElement.getAttribute("data-theme");
+        if (attr) {
+          return attr;
+        }
+        return themeMedia && themeMedia.matches ? "dark" : "light";
+      }
+
+      function setTheme(mode) {
+        if (mode === "dark") {
+          document.documentElement.setAttribute("data-theme", "dark");
+        } else if (mode === "light") {
+          document.documentElement.setAttribute("data-theme", "light");
+        } else {
+          document.documentElement.removeAttribute("data-theme");
+        }
+      }
+
+      var storedTheme = null;
+      try {
+        storedTheme = localStorage.getItem("drm-panic-theme");
+      } catch (err) {
+        storedTheme = null;
+      }
+      followSystemTheme = !storedTheme;
+      setTheme(storedTheme || "auto");
+
+      if (themeMedia && themeMedia.addEventListener) {
+        themeMedia.addEventListener("change", function (event) {
+          if (followSystemTheme) {
+            setTheme(event.matches ? "dark" : "light");
+          }
+        });
+      }
+
+      themeToggle.addEventListener("click", function () {
+        var next = effectiveTheme() === "dark" ? "light" : "dark";
+        followSystemTheme = false;
+        try {
+          localStorage.setItem("drm-panic-theme", next);
+        } catch (err) {
+          /* storage unavailable, keep in-session choice */
+        }
+        setTheme(next);
+      });
+
+      /* ---- Init ---------------------------------------------------- */
+      applyLanguage(detectLang());
+    })();
+  </script>
+</body>
+</html>
